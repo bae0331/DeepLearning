@@ -1,0 +1,4 @@
+-keep class com.example.visualchatgpt.network.** { *; }
+-keep class com.example.visualchatgpt.model.** { *; }
+-keepattributes Signature
+-keepattributes *Annotation*
