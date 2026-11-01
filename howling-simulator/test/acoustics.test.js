@@ -145,3 +145,27 @@ test('흡음재 추천: 딱딱한 방에서 잔향을 줄이고, 예산을 지�
     assert.ok(s.u - s.w / 2 >= -1e-9 && s.u + s.w / 2 <= uLen + 1e-9 && s.v - s.h / 2 >= -1e-9 && s.v + s.h / 2 <= vLen + 1e-9);
   }
 });
+
+test('흡음재 이어서 추가: 기존 흡음재는 그대로, 새 면적만큼 겹치지 않는 다음 위치에 추가', () => {
+  const hardRoom = { ...room, surfaces: { A: 'gypsum', B: 'gypsum', C: 'gypsum', D: 'gypsum', floor: 'vinyl', ceil: 'gypsum' } };
+  const spk = [pa(), pa({ y: 3.9, yaw: -20 })];
+  const first = A.createAbsorberPlanner(hardRoom, spk, [mic()], Object.assign({ budget: 6 }, OPTS)).runSync();
+  const more = A.createAbsorberPlanner({ ...hardRoom, patches: first.patches }, spk, [mic()], Object.assign({ budget: 3, minGain: 0.02 }, OPTS)).runSync();
+  assert.ok(more.steps.length >= 1);
+  assert.ok(more.usedArea <= 3 + 1e-9 && more.usedArea > 0);
+  // 기존 흡음재는 유지되고 새 것이 뒤에 붙는다
+  assert.deepStrictEqual(more.patches.slice(0, first.patches.length), first.patches);
+  assert.strictEqual(more.patches.length, first.patches.length + more.steps.length);
+  // 이어서 시작: 첫 결과의 끝 상태에서 출발하고 더 좋아진다
+  assert.ok(Math.abs(more.start.rtMid - first.end.rtMid) < 1e-9);
+  assert.ok(more.end.rtMid < more.start.rtMid);
+  // 같은 표면의 기존 흡음재와 30% 넘게 겹치지 않는다
+  for (const st of more.steps) {
+    const a = A.clipPatch(hardRoom, st);
+    for (const p of first.patches.filter((q) => q.surface === st.surface)) {
+      const b = A.clipPatch(hardRoom, p);
+      const ov = Math.max(0, Math.min(a.u1, b.u1) - Math.max(a.u0, b.u0)) * Math.max(0, Math.min(a.v1, b.v1) - Math.max(a.v0, b.v0));
+      assert.ok(ov <= 0.3 * a.area + 1e-9);
+    }
+  }
+});

@@ -942,10 +942,13 @@
    * 흡음재 추천 (탐욕적 단계 탐색).
    * 각 단계마다 "표면 × 흡음재 종류 × 크기 × 위치(1차 반사 지점·중앙·모서리)" 후보를 시뮬레이션해
    * 하울링 여유와 잔향시간 목표(합주실 0.3–0.45 s)를 가장 효율적으로(면적 대비) 개선하는 것을 고른다.
-   * options: { budget (m²), reqMargin, lref, micHpf, rtLo, rtHi, names: {speakers:[], mics:[]} }
+   * options: { budget (m²), reqMargin, lref, micHpf, rtLo, rtHi, minGain, maxSteps }
+   *  - room0.patches(이미 붙인 흡음재)는 그대로 두고 그 위에 추가한다. 따라서 이전 추천 결과를 patches에
+   *    넣고 budget만 새로 주면 "다음으로 좋은 곳"에 이어서 추가하는 용도로 쓸 수 있다.
+   *  - minGain: 한 단계로 인정할 최소 개선 점수 (기본 0.2, 추가 모드에서는 작게 — 효과가 조금이라도 있으면 배치)
    */
   function createAbsorberPlanner(room0, speakers, mics, options) {
-    const o = Object.assign({ budget: 10, reqMargin: 6, lref: 100, micHpf: 100, rtLo: 0.28, rtHi: 0.45 }, options || {});
+    const o = Object.assign({ budget: 10, reqMargin: 6, lref: 100, micHpf: 100, rtLo: 0.28, rtHi: 0.45, minGain: 0.2, maxSteps: 12 }, options || {});
     const room = normalizeRoom(room0);
     room.patches = room.patches.map((p) => ({ ...p }));
     const routed = speakers.filter((s) => isRouted(s) && speakerAmp(s, o.lref, o.taper) > 0);
@@ -997,11 +1000,11 @@
         for (const pos of positions) {
           if (isWall) {
             for (const type of ['panel50', 'panel100', 'foam25'])
-              for (const [w, h] of [[1.2, 1.2], [2.4, 1.2], [3.6, 1.2]]) add(s, type, pos.u, pos.v, w, h, pos.reason);
+              for (const [w, h] of [[0.6, 1.2], [1.2, 1.2], [2.4, 1.2], [3.6, 1.2]]) add(s, type, pos.u, pos.v, w, h, pos.reason);
             for (const w of [2, 3]) add(s, 'curtain', pos.u, (H - 0.2) / 2 + 0.1, w, H - 0.2, pos.reason);
           } else if (s === 'ceil') {
             for (const type of ['panel50', 'panel100'])
-              for (const [w, h] of [[1.2, 1.2], [2.4, 1.2], [2.4, 2.4]]) add(s, type, pos.u, pos.v, w, h, pos.reason);
+              for (const [w, h] of [[1.2, 0.6], [1.2, 1.2], [2.4, 1.2], [2.4, 2.4]]) add(s, type, pos.u, pos.v, w, h, pos.reason);
           } else {
             for (const [w, h] of [[2, 1.5], [3, 2]]) add(s, 'carpet', pos.u, pos.v, w, h, pos.reason);
           }
@@ -1028,9 +1031,9 @@
         const m = measure(trial);
         const gain = m.s - curM.s;
         const eff = gain / Math.pow(c.area, 0.6);
-        if (gain > 0.2 && (!best || eff > best.eff)) best = { c, m, gain, eff };
+        if (gain > o.minGain && (!best || eff > best.eff)) best = { c, m, gain, eff };
       }
-      if (!best || steps.length >= 12) { finished = true; return true; }
+      if (!best || steps.length >= o.maxSteps) { finished = true; return true; }
       room.patches.push({ surface: best.c.surface, type: best.c.type, u: best.c.u, v: best.c.v, w: best.c.w, h: best.c.h });
       used += best.c.area;
       steps.push(Object.assign({}, best.c, {

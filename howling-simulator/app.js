@@ -67,7 +67,7 @@
       ],
       adv: { lref: 100, reqMargin: 6, micHpf: 100, taper: 'audio' },
       opt: { pa: true, inst: false, mic: true, weight: 0.4 },
-      absorb: { budget: 12 },
+      absorb: { budget: 12, add: 2 },
       heat: 'mic',
     };
   }
@@ -119,7 +119,9 @@
   let heat = null;
   let undoSnapshot = null;
   let busy = false;
-  let absorbPlan = null; // 추천 결과 (미리보기)
+  // 흡음재 추천 미리보기: { steps:[{..., batch}], start, end, usedArea, batches:[{budget, used}] }
+  // batch 0 = 처음 추천, 1 이상 = "다음으로 좋은 곳에 추가"로 더한 것
+  let absorbPlan = null;
 
   // ------------------------------------------------------------ 계산
   const engineRoom = () => Object.assign({}, state.room, { people: state.people.length });
@@ -977,6 +979,7 @@
     $('#optMic').checked = state.opt.mic;
     $('#optWeight').value = state.opt.weight;
     $('#absorbBudget').value = state.absorb.budget;
+    $('#absorbAdd').value = state.absorb.add;
   }
 
   function clampObjects() {
@@ -1213,7 +1216,7 @@
   // ------------------------------------------------------------ 자동 배치
   function setBusy(on) {
     busy = on;
-    ['#btnOptimize', '#btnOptMic', '#btnAbsorb'].forEach((s) => { $(s).disabled = on; });
+    ['#btnOptimize', '#btnOptMic', '#btnAbsorb', '#btnAbsorbMore'].forEach((s) => { $(s).disabled = on; });
   }
 
   function runOptimize(micOnly) {
@@ -1327,64 +1330,107 @@
     return '잔향시간 감소';
   }
 
-  function runAbsorb() {
+  // mode: 'new' = 처음부터 추천, 'more' = 붙인 흡음재 + 현재 추천 위에 입력한 면적만큼 추가
+  function runAbsorb(mode) {
     if (busy) return;
-    const budget = clamp(+state.absorb.budget || 12, 0.5, 100);
-    const planner = A.createAbsorberPlanner(engineRoom(), state.speakers, state.mics, {
+    const more = mode === 'more';
+    const budget = more ? clamp(+state.absorb.add || 2, 0.5, 50) : clamp(+state.absorb.budget || 12, 0.5, 100);
+    const room = engineRoom();
+    if (more && absorbPlan) room.patches = state.room.patches.concat(absorbPlan.steps.map((st) => ({ surface: st.surface, type: st.type, u: st.u, v: st.v, w: st.w, h: st.h })));
+    const planner = A.createAbsorberPlanner(room, state.speakers, state.mics, {
       budget, reqMargin: +state.adv.reqMargin, lref: +state.adv.lref, micHpf: +state.adv.micHpf, taper: state.adv.taper,
+      minGain: more ? 0.02 : 0.2, maxSteps: more ? 20 : 12,
     });
     setBusy(true);
     const bar = $('#absorbProgress');
     bar.hidden = false;
-    $('#absorbResult').innerHTML = '<span class="muted">벽·천장·바닥의 후보 위치를 시뮬레이션하고 있습니다…</span>';
+    if (!more || !absorbPlan) $('#absorbResult').innerHTML = `<span class="muted">${more ? `${fmt(budget)} m²를 붙일 다음 위치를` : '벽·천장·바닥의 후보 위치를'} 시뮬레이션하고 있습니다…</span>`;
     const tick = () => {
       const done = planner.step();
       bar.firstElementChild.style.width = (planner.progress * 100).toFixed(1) + '%';
       if (!done) setTimeout(tick, 0);
-      else finishAbsorb(planner.result, budget);
+      else finishAbsorb(planner.result, budget, more);
     };
     setTimeout(tick, 30);
   }
 
-  function finishAbsorb(res, budget) {
+  function finishAbsorb(res, budget, more) {
     setBusy(false);
     $('#absorbProgress').hidden = true;
-    absorbPlan = res;
+    let notice = null;
+    if (!more) {
+      absorbPlan = res.steps.length
+        ? { steps: res.steps.map((st) => Object.assign({}, st, { batch: 0 })), start: res.start, end: res.end, usedArea: res.usedArea, batches: [{ budget, used: res.usedArea }] }
+        : null;
+      if (!absorbPlan) {
+        $('#absorbResult').innerHTML = `<p>추가 흡음재로 얻을 수 있는 개선이 거의 없습니다 (현재 RT60 ${fmt(res.start.rtMid, 2)}초${Number.isFinite(res.start.margin) ? `, 하울링 여유 ${fmt(res.start.margin)} dB` : ''}). 배치·볼륨·EQ 조정이 더 효과적입니다.</p>`;
+        $('#btnAbsorbApply').hidden = true; $('#btnAbsorbClear').hidden = true;
+        drawAll();
+        return;
+      }
+    } else if (!res.steps.length) {
+      notice = { ok: false, html: `입력한 ${fmt(budget)} m²를 더 붙일 만한 곳이 없습니다. 더 붙여도 하울링 여유·잔향시간이 거의 좋아지지 않거나 방이 너무 건조해집니다 (현재 RT60 ${fmt(res.start.rtMid, 2)}초). 배치·볼륨·EQ 조정을 권장합니다.` };
+      toast('추가로 붙일 만한 곳이 없습니다.');
+      if (!absorbPlan) {
+        $('#absorbResult').innerHTML = `<p class="absorb-notice">${notice.html}</p>`;
+        drawAll();
+        return;
+      }
+    } else {
+      if (!absorbPlan) absorbPlan = { steps: [], start: res.start, end: res.start, usedArea: 0, batches: [{ budget: 0, used: 0, applied: true }] };
+      const batch = absorbPlan.batches.length;
+      absorbPlan.steps = absorbPlan.steps.concat(res.steps.map((st) => Object.assign({}, st, { batch })));
+      absorbPlan.end = res.end;
+      absorbPlan.usedArea += res.usedArea;
+      absorbPlan.batches.push({ budget, used: res.usedArea });
+      const first = absorbPlan.steps.length - res.steps.length + 1;
+      const range = res.steps.length > 1 ? `${first}–${absorbPlan.steps.length}번` : `${first}번`;
+      notice = {
+        ok: true,
+        html: `<b>${fmt(res.usedArea)} m²</b>를 다음으로 좋은 곳(${range})에 추가했습니다${res.usedArea < budget - 0.5 ? ` — 입력한 ${fmt(budget)} m² 중 나머지는 더 붙여도 효과가 없거나 패널 크기 단위(60×120cm) 때문에 남았습니다` : ''}. 하울링 여유 ${fmt(res.start.margin)} → ${fmt(res.end.margin)} dB, 잔향시간 ${fmt(res.start.rtMid, 2)} → ${fmt(res.end.rtMid, 2)}초.`,
+      };
+    }
+    renderAbsorbPlan(notice);
+  }
+
+  function renderAbsorbPlan(notice) {
+    const plan = absorbPlan;
     const el = $('#absorbResult');
     const req = +state.adv.reqMargin;
-    if (!res.steps.length) {
-      absorbPlan = null;
-      el.innerHTML = `<p>추가 흡음재로 얻을 수 있는 개선이 거의 없습니다 (현재 RT60 ${fmt(res.start.rtMid, 2)}초${Number.isFinite(res.start.margin) ? `, 하울링 여유 ${fmt(res.start.margin)} dB` : ''}). 배치·볼륨·EQ 조정이 더 효과적입니다.</p>`;
-      $('#btnAbsorbApply').hidden = true; $('#btnAbsorbClear').hidden = true;
-      drawAll();
-      return;
-    }
     const totals = {};
-    res.steps.forEach((s) => { totals[s.type] = (totals[s.type] || 0) + s.area; });
+    plan.steps.forEach((st) => { totals[st.type] = (totals[st.type] || 0) + st.area; });
     const totalText = Object.entries(totals).map(([t, a]) => {
-      const n = t === 'panel50' || t === 'panel100' ? ` (60×120cm 약 ${Math.round(a / A.PANEL_AREA)}장)` : t === 'basstrap' ? ` (${res.steps.filter((s) => s.type === t).length}개)` : '';
+      const n = t === 'panel50' || t === 'panel100' ? ` (60×120cm 약 ${Math.round(a / A.PANEL_AREA)}장)` : t === 'basstrap' ? ` (${plan.steps.filter((st) => st.type === t).length}개)` : '';
       return `<li><span class="swatch" style="background:${PATCH_COLORS[t]}"></span>${esc(A.MATERIALS[t].name)}: <b>${fmt(a)} m²</b>${n}</li>`;
     }).join('');
-    const hasLoop = Number.isFinite(res.start.margin);
-    let html = `<div class="absorb-summary">
-      ${hasLoop ? `<span>하울링 여유 <b>${fmt(res.start.margin)} → ${fmt(res.end.margin)} dB</b></span>` : ''}
-      <span>잔향시간(중역) <b>${fmt(res.start.rtMid, 2)} → ${fmt(res.end.rtMid, 2)}초</b></span>
-      <span>저역 <b>${fmt(res.start.rtLow, 2)} → ${fmt(res.end.rtLow, 2)}초</b></span>
-      <span>총 <b>${fmt(res.usedArea)} m²</b> / 최대 ${fmt(budget)} m²</span></div>
+    const hasLoop = Number.isFinite(plan.start.margin);
+    const extra = plan.batches.slice(1).reduce((a, b) => a + b.used, 0);
+    const firstUsed = plan.batches[0].applied ? 0 : plan.batches[0].used;
+    const areaText = extra > 0
+      ? `총 <b>${fmt(plan.usedArea)} m²</b> (${plan.batches[0].applied ? '' : `처음 ${fmt(firstUsed)} + `}추가 ${fmt(extra)} m²)`
+      : `총 <b>${fmt(plan.usedArea)} m²</b> / 최대 ${fmt(plan.batches[0].budget)} m²`;
+    let html = notice ? `<p class="absorb-notice${notice.ok ? ' ok' : ''}">${notice.html}</p>` : '';
+    html += `<div class="absorb-summary">
+      ${hasLoop ? `<span>하울링 여유 <b>${fmt(plan.start.margin)} → ${fmt(plan.end.margin)} dB</b></span>` : ''}
+      <span>잔향시간(중역) <b>${fmt(plan.start.rtMid, 2)} → ${fmt(plan.end.rtMid, 2)}초</b></span>
+      <span>저역 <b>${fmt(plan.start.rtLow, 2)} → ${fmt(plan.end.rtLow, 2)}초</b></span>
+      <span>${areaText}</span></div>
       <ul class="absorb-totals">${totalText}</ul>
       <table><tr><th>#</th><th>어디에</th><th>무엇을</th><th>얼마나</th><th>이유</th><th>효과</th></tr>`;
-    res.steps.forEach((s, i) => {
-      const dm = s.after.margin - s.before.margin;
-      html += `<tr><td><span class="rank" style="background:${PATCH_COLORS[s.type]}">${i + 1}</span></td>
-        <td>${describeLocation(s)}</td>
-        <td>${esc(A.MATERIALS[s.type].name)}</td>
-        <td>${describeAmount(s)}</td>
-        <td>${describeReason(s)}</td>
-        <td class="num">${hasLoop ? `여유 ${sgn(dm)} dB<br>` : ''}RT ${fmt(s.before.rtMid, 2)}→${fmt(s.after.rtMid, 2)}초</td></tr>`;
+    const multiAdd = plan.batches.length > 2;
+    plan.steps.forEach((st, i) => {
+      const dm = st.after.margin - st.before.margin;
+      const tag = st.batch > 0 ? `<br><span class="tag-add">추가${multiAdd ? ' ' + st.batch : ''}</span>` : '';
+      html += `<tr class="${st.batch > 0 ? 'added' : ''}"><td><span class="rank" style="background:${PATCH_COLORS[st.type]}">${i + 1}</span>${tag}</td>
+        <td>${describeLocation(st)}</td>
+        <td>${esc(A.MATERIALS[st.type].name)}</td>
+        <td>${describeAmount(st)}</td>
+        <td>${describeReason(st)}</td>
+        <td class="num">${hasLoop ? `여유 ${sgn(dm)} dB<br>` : ''}RT ${fmt(st.before.rtMid, 2)}→${fmt(st.after.rtMid, 2)}초</td></tr>`;
     });
     html += '</table>';
-    if (hasLoop && res.end.margin < req) html += `<p class="down">흡음재만으로는 필요 여유(${req} dB)에 못 미칩니다. 배치 최적화·볼륨 조정과 함께 적용하세요.</p>`;
-    html += '<p class="hint">평면도·측면도에 번호와 함께 미리보기로 표시됩니다. "추천 모두 적용"을 누르면 붙인 흡음재 목록에 추가됩니다.</p>';
+    if (hasLoop && plan.end.margin < req) html += `<p class="down">흡음재만으로는 필요 여유(${req} dB)에 못 미칩니다. 배치 최적화·볼륨 조정과 함께 적용하세요.</p>`;
+    html += '<p class="hint">평면도·측면도에 번호와 함께 미리보기로 표시됩니다. "추천 모두 적용"을 누르면 (추가분 포함) 모두 붙인 흡음재 목록에 들어갑니다.</p>';
     el.innerHTML = html;
     $('#btnAbsorbApply').hidden = false;
     $('#btnAbsorbClear').hidden = false;
@@ -1433,7 +1479,9 @@
     $('#absorbBudget').addEventListener('input', (e) => { const v = parseFloat(e.target.value); if (Number.isFinite(v)) { state.absorb.budget = v; save(); } });
     $('#btnOptimize').addEventListener('click', () => runOptimize(false));
     $('#btnOptMic').addEventListener('click', () => runOptimize(true));
-    $('#btnAbsorb').addEventListener('click', runAbsorb);
+    $('#btnAbsorb').addEventListener('click', () => runAbsorb('new'));
+    $('#btnAbsorbMore').addEventListener('click', () => runAbsorb('more'));
+    $('#absorbAdd').addEventListener('input', (e) => { const v = parseFloat(e.target.value); if (Number.isFinite(v)) { state.absorb.add = v; save(); } });
     $('#btnAbsorbApply').addEventListener('click', () => {
       if (!absorbPlan) return;
       const n = absorbPlan.steps.length;

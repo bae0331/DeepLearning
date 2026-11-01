@@ -244,3 +244,10 @@ button.secondary:disabled { opacity: 0.6; cursor: progress; }
   .row-item.person label.nm { grid-column: 1 / -1; }
   .absorb-controls label { width: 100%; }
 }
+
+.absorb-more { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--line); }
+.absorb-more .hint { flex: 1; min-width: 220px; align-self: center; }
+.absorb-result tr.added td { background: #f5f9ff; }
+.tag-add { display: inline-block; margin-top: 4px; font-size: 10.5px; font-weight: 700; color: #1971c2; background: #e7f5ff; border-radius: 4px; padding: 1px 5px; white-space: nowrap; }
+.absorb-notice { margin: 0 0 10px; padding: 9px 12px; border-radius: 9px; background: #fff7e8; border-left: 3px solid var(--amber); }
+.absorb-notice.ok { background: #e7f5ff; border-left-color: #1971c2; }
