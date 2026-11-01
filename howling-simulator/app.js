@@ -13,6 +13,15 @@
   const normYaw = (y) => { y = ((y + 180) % 360 + 360) % 360 - 180; return y === -180 ? 180 : y; };
   const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
+  let toastTimer = null;
+  function toast(msg) {
+    const el = $('#toast');
+    el.textContent = msg;
+    el.hidden = false;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { el.hidden = true; }, 3200);
+  }
+
   let uid = 1;
   const newId = () => 'o' + uid++;
 
@@ -818,7 +827,7 @@
     if (btn) {
       const kind = card.dataset.kind;
       const list = kind === 'spk' ? state.speakers : state.mics;
-      if (list.length <= 1) { alert(kind === 'spk' ? '스피커는 최소 1개가 필요합니다.' : '마이크는 최소 1개가 필요합니다.'); return; }
+      if (list.length <= 1) { toast(kind === 'spk' ? '스피커는 최소 1개가 필요합니다.' : '마이크는 최소 1개가 필요합니다.'); return; }
       const idx = list.findIndex((x) => x.id === card.dataset.id);
       list.splice(idx, 1);
       renderLists();
@@ -1113,8 +1122,20 @@
       renderLists();
       requestUpdate();
     });
-    $('#btnReset').addEventListener('click', () => {
-      if (!confirm('예제 설정으로 초기화할까요? 현재 설정은 사라집니다.')) return;
+    let resetArmed = null;
+    $('#btnReset').addEventListener('click', (e) => {
+      // 두 번 눌러 확인 (브라우저 확인창 없이)
+      const btn = e.currentTarget;
+      if (!resetArmed) {
+        btn.textContent = '정말 초기화?';
+        btn.classList.add('danger');
+        resetArmed = setTimeout(() => { resetArmed = null; btn.textContent = '초기화'; btn.classList.remove('danger'); }, 3000);
+        return;
+      }
+      clearTimeout(resetArmed);
+      resetArmed = null;
+      btn.textContent = '초기화';
+      btn.classList.remove('danger');
       state = defaultState();
       selected = { kind: 'mic', id: state.mics[0].id };
       undoSnapshot = null;
@@ -1123,14 +1144,21 @@
       renderRoomInputs();
       renderLists();
       requestUpdate();
+      toast('예제 설정으로 초기화했습니다.');
     });
     $('#btnExport').addEventListener('click', () => {
-      const blob = new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' });
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      a.download = 'howling-setup.json';
-      a.click();
-      setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+      const json = JSON.stringify(state, null, 2);
+      try {
+        const blob = new Blob([json], { type: 'application/json' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = 'howling-setup.json';
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+      } catch (err) { /* 다운로드가 막힌 환경 */ }
+      const done = (copied) => toast(copied ? '설정 JSON을 저장하고 클립보드에도 복사했습니다.' : '설정 JSON 파일을 저장했습니다.');
+      if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(json).then(() => done(true), () => done(false));
+      else done(false);
     });
     $('#fileImport').addEventListener('change', (e) => {
       const file = e.target.files[0];
@@ -1142,7 +1170,8 @@
         renderRoomInputs();
         renderLists();
         requestUpdate();
-      }).catch(() => alert('설정 파일을 읽을 수 없습니다.'));
+        toast('설정을 불러왔습니다.');
+      }).catch(() => toast('설정 파일을 읽을 수 없습니다.'));
       e.target.value = '';
     });
     bindCanvas($('#plan'), 'plan');
